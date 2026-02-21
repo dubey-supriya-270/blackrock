@@ -1,0 +1,14 @@
+fastapi==0.115.6
+pydantic-settings==2.8.1
+uvicorn[standard]==0.34.0
+uvloop==0.21.0
+pydantic==2.10.6
+psutil==6.1.1
+httpx==0.28.1
+pytest==8.3.5
+pytest-asyncio==0.25.3
+# Performance optimizations
+numpy==2.2.3
+intervaltree==3.1.0
+redis[hiredis]==5.2.1
+cachetools==5.5.2

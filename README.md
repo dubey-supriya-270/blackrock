@@ -1,188 +1,237 @@
 # BlackRock Retirement Micro-Savings API
 
-A production-grade REST API for automated retirement savings using expense-based micro-investments. Built with Python + FastAPI.
-
-## Features
-
-- **Transaction Builder** — Enriches raw expenses with `ceiling` and `remanent` fields
-- **Transaction Validator** — Detects negative amounts and duplicates
-- **Temporal Filter** — Applies q (fixed override), p (additive), and k (grouping) period rules
-- **Returns Calculator** — Projects savings via NPS (7.11%) or Index Fund (14.49%) with inflation adjustment
-- **Performance Monitor** — Reports response time, memory, and thread metrics
+Production-grade REST API for automated retirement savings via expense-based micro-investments. Built with Python 3.12 + FastAPI.
 
 ---
 
-## Quick Start (Docker)
+## Quick Start
+
+### With Docker (recommended)
 
 ```bash
-# Build and run with Docker Compose
 docker compose up --build
-
-# Or build manually
-docker build -t blk-hacking-ind-retirement-savings .
-docker run -p 5477:5477 blk-hacking-ind-retirement-savings
 ```
 
-API will be available at: **http://localhost:5477**  
-Swagger UI (interactive docs): **http://localhost:5477/docs**
+| URL | Description |
+|---|---|
+| `http://localhost:5477/docs` | Swagger UI (interactive) |
+| `http://localhost:5477/redoc` | ReDoc |
+| `http://localhost:5477/health` | Liveness probe |
+| `http://localhost:5477/ready` | Readiness probe |
+| `http://localhost/docs` | Via Nginx (port 80) |
 
----
-
-## Local Development
-
-### Prerequisites
-- Python 3.12+
-- pip
-
-### Setup
+### Local Development
 
 ```bash
-cd /home/supriya/Projects/finance
-
-# Create a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Run the server
 uvicorn app.main:app --host 0.0.0.0 --port 5477 --reload
 ```
 
----
-
-## Running Tests
+### Run Tests
 
 ```bash
-source .venv/bin/activate
-pytest tests/ -v
+pytest tests/ -v    # 38 tests — unit + integration
 ```
 
 ---
 
 ## API Reference
 
-All endpoints are prefixed with `/blackrock/challenge/v1`.
+Base path: `/blackrock/challenge/v1`
 
 ### `POST /transactions:parse`
 
-Enrich raw expenses with ceiling and remanent.
+Accepts a **flat list** of raw expenses. Returns each enriched with `ceiling` and `remanent`.
 
-**Request**
 ```json
-{
-  "expenses": [
-    { "date": "2024-01-15 10:00:00", "amount": "1519" }
-  ]
-}
+[
+  {"date": "2023-02-28 15:49:20", "amount": 375},
+  {"date": "2023-07-15 10:30:00", "amount": 620}
+]
 ```
+
 **Response**
 ```json
-{
-  "transactions": [
-    { "date": "2024-01-15 10:00:00", "amount": "1519", "ceiling": "1600", "remanent": "81" }
-  ]
-}
+[
+  {"date": "2023-02-28 15:49:20", "amount": 375.0, "ceiling": 400.0, "remanent": 25.0},
+  {"date": "2023-07-15 10:30:00", "amount": 620.0, "ceiling": 700.0, "remanent": 80.0}
+]
 ```
+
+**Math**: `ceiling = next multiple of 100 ≥ amount`, `remanent = ceiling − amount`
 
 ---
 
 ### `POST /transactions:validator`
 
-Validate transactions; detect negatives and duplicates.
+Validates enriched transactions — detects negatives and duplicate dates.
 
-**Request**
 ```json
 {
-  "wage": "50000",
-  "transactions": [...]
+  "wage": 50000,
+  "transactions": [
+    {"date": "2023-01-15 10:30:00", "amount": 2000, "ceiling": 2000, "remanent": 0},
+    {"date": "2023-07-10 09:15:00", "amount": -250, "ceiling": 300,  "remanent": 50}
+  ]
 }
 ```
-**Response**
-```json
-{
-  "valid": [...],
-  "invalid": [{ "transaction": {...}, "error": "Negative amounts are not allowed" }]
-}
-```
+
+**Response**: `{"valid": [...], "invalid": [{"transaction": {...}, "error": "Negative amounts are not allowed"}]}`
 
 ---
 
 ### `POST /transactions:filter`
 
-Apply q, p, k temporal period rules.
+Applies q/p/k period rules on **raw transactions** (ceiling/remanent auto-computed). Returns boolean flags per transaction.
 
-**Request**
 ```json
 {
-  "wage": "60000",
-  "age": 30,
-  "inflation": "0.06",
-  "q_periods": [{ "id": "q1", "start": "2024-01-01", "end": "2024-01-31", "fixed_amount": "200" }],
-  "p_periods": [{ "id": "p1", "start": "2024-01-01", "end": "2024-01-31", "extra_amount": "50" }],
-  "k_periods": [{ "id": "k1", "start": "2024-01-01", "end": "2024-12-31" }],
-  "transactions": [...]
+  "age": 29, "wage": 50000, "inflation": 5.5,
+  "q": [{"fixed": 0,  "start": "2023-07-01 00:00:00", "end": "2023-07-31 23:59:59"}],
+  "p": [{"extra": 25, "start": "2023-10-01 00:00:00", "end": "2023-12-31 19:59:59"}],
+  "k": [{"start": "2023-01-01 00:00:00", "end": "2023-12-31 23:59:59"}],
+  "transactions": [
+    {"date": "2023-02-28 15:49:20", "amount": 375},
+    {"date": "2023-07-01 21:59:00", "amount": 620},
+    {"date": "2023-12-17 08:09:45", "amount": -10}
+  ]
 }
 ```
 
 **Period Rules**:
-- **q period**: `remanent` is replaced by `fixed_amount`. If multiple q periods match, the one with the **latest start date** wins.
-- **p period**: `extra_amount` is added to `remanent`. All matching p periods are **cumulative**.
-- **k period**: Groups transactions for savings projection. A transaction can belong to **multiple k periods**.
+
+| Period | Field | Behaviour |
+|---|---|---|
+| **q** | `fixed` | Replaces `remanent` with fixed amount. Latest-start wins on overlap. |
+| **p** | `extra` | Adds extra amount to `remanent`. All matching p periods are cumulative. |
+| **k** | _(none)_ | Groups transactions for returns projection. Transaction can belong to multiple k periods. |
+
+> Invalid dates like `Nov 31` are automatically clamped to the last valid day of the month.
+
+**Response**:
+```json
+{
+  "valid": [
+    {"date": "...", "amount": 375.0, "ceiling": 400.0, "remanent": 25.0,
+     "in_q_period": false, "in_p_period": false, "in_k_period": true}
+  ],
+  "invalid": [
+    {"date": "...", "amount": -10.0, "error": "Negative amounts are not allowed"}
+  ]
+}
+```
 
 ---
 
-### `POST /returns:nps`
+### `POST /returns:nps` and `POST /returns:index`
 
-Project savings using NPS (7.11% p.a., includes tax benefits).
+Projects retirement savings. **Same payload format as `/transactions:filter`.**
 
-### `POST /returns:index`
+| Vehicle | Rate | Tax Benefit |
+|---|---|---|
+| NPS | 7.11% p.a. | Section 80CCD — up to ₹2,00,000 or 10% of annual income |
+| Index Fund | 14.49% p.a. | `null` (no deduction scheme) |
 
-Project savings using Index Fund (14.49% p.a., no tax benefit).
+> Use `wage ≥ 58334` (monthly) to see non-zero `tax_benefit` — annual income must exceed ₹7L tax threshold.
 
-**Shared Request format** (same as `/transactions:filter`):
-
-**Response**
+**Response**:
 ```json
 {
-  "total_transaction_amount": "1519.00",
-  "total_ceiling": "1600.00",
-  "k_period_returns": [{
-    "k_period_id": "k1",
-    "total_invested": "81.00",
-    "future_value": "285.15",
-    "real_value": "79.34",
-    "tax_benefit": "0.00"
-  }]
+  "total_transaction_amount": 1725.0,
+  "total_ceiling": 1900.0,
+  "savings_by_dates": [
+    {
+      "start": "2023-01-01 00:00:00",
+      "end":   "2023-12-31 23:59:59",
+      "amount": 145.0,
+      "tax_benefit": 0.0,
+      "profit": 86.89
+    }
+  ]
 }
 ```
 
 **Formulas**:
-- Compound Interest: `A = P × (1 + r)^t` where `t = 60 - current_age`
-- Real Return: `A_real = A / (1 + inflation)^t`
-- NPS Deduction: `min(invested, 10% × annual_income, ₹2,00,000)`
+- `future_value = principal × (1 + rate)^t` where `t = 60 − age`
+- `real_value = future_value / (1 + inflation/100)^t`
+- `profit = real_value − principal` (inflation-adjusted net gain)
+- `tax_benefit = tax(income) − tax(income − NPS_deduction)`
 
 ---
 
 ### `GET /performance`
 
 ```json
-{ "time_ms": 0.123, "memory_mb": 45.2, "threads": 4 }
+{"time_ms": 0.3, "memory_mb": 54.2, "threads": 4}
 ```
+
+### `GET /health` · `GET /ready`
+
+Liveness and readiness probes for Kubernetes / Docker healthchecks.
 
 ---
 
-## Investment Details
+## Architecture
 
-| Vehicle | Annual Rate | Tax Benefit |
+### Project Structure
+
+```
+finance/
+├── app/
+│   ├── main.py              # FastAPI app, CORS, middleware, exception handler
+│   ├── config.py            # Pydantic Settings (all env vars centralised)
+│   ├── logging_config.py    # Structured JSON logging
+│   ├── routers/
+│   │   ├── transactions.py  # :parse, :validator, :filter
+│   │   ├── returns.py       # :nps, :index
+│   │   └── performance.py   # /performance
+│   ├── core/
+│   │   ├── math_utils.py    # ceiling, remnant + NumPy batch functions
+│   │   ├── period_utils.py  # IntervalTree q/p/k matching
+│   │   ├── tax_utils.py     # Progressive tax slabs + NPS benefit
+│   │   ├── finance_utils.py # Compound interest, real return, years calc
+│   │   └── cache.py         # L1 (TTLCache) + L2 (Redis) two-level cache
+│   └── models/
+│       ├── transaction_models.py
+│       ├── period_models.py
+│       └── return_models.py
+├── tests/                   # 38 tests (unit + integration)
+├── Dockerfile               # Multi-stage build
+├── compose.yaml             # Nginx + API + Redis
+├── nginx.conf               # L7 load balancer + micro-cache
+└── requirements.txt
+```
+
+### Performance Design
+
+| Layer | Technique | Benefit |
 |---|---|---|
-| NPS | 7.11% | Up to ₹2,00,000 (10% of income) |
-| Index Fund | 14.49% | None |
+| **L1 Cache** | In-process `TTLCache` (~50ns hit) | Zero network for hot requests |
+| **L2 Cache** | Redis async (~0.3ms hit) + fire-and-forget writes | Survives restarts |
+| **Period matching** | `IntervalTree` → O(log n) | vs O(n×m) nested loops |
+| **Batch math** | NumPy `batch_remnant` (C-level) | All transactions in one call |
+| **HTTP server** | `uvloop` + `httptools` | 2–4× faster than CPython defaults |
+| **Workers** | `2 × CPU + 1` (16 on 8-core) | Full core utilisation |
+| **OS tuning** | `somaxconn=65535`, `tcp_tw_reuse`, keepalive | Kernel-level throughput |
 
-**Tax Slabs (Simplified)**:
+### Production Features
 
-| Income Range | Rate |
+- ✅ Structured JSON logs (ELK / Grafana Loki compatible)
+- ✅ `X-Request-ID` header on every response (traceable)
+- ✅ Global exception handler — no stack traces leaked to clients
+- ✅ CORS middleware
+- ✅ `/health` (liveness) + `/ready` (readiness, checks Redis)
+- ✅ Graceful fallback — works without Redis (reduced performance)
+- ✅ Multi-stage Docker build (smaller image, no build tools in runtime)
+- ✅ `.gitignore` — secrets excluded
+
+---
+
+## Tax Slabs (New Regime)
+
+| Income | Rate |
 |---|---|
 | Up to ₹7,00,000 | 0% |
 | ₹7,00,001 – ₹10,00,000 | 10% |
@@ -192,32 +241,12 @@ Project savings using Index Fund (14.49% p.a., no tax benefit).
 
 ---
 
-## Project Structure
+## Environment Variables
 
-```
-finance/
-├── app/
-│   ├── main.py              # FastAPI application
-│   ├── routers/
-│   │   ├── transactions.py  # :parse, :validator, :filter
-│   │   ├── returns.py       # :nps, :index
-│   │   └── performance.py   # /performance
-│   ├── core/
-│   │   ├── math_utils.py    # ceiling, remnant
-│   │   ├── period_utils.py  # q/p/k period logic
-│   │   ├── tax_utils.py     # tax slabs, NPS rebate
-│   │   └── finance_utils.py # compound interest, inflation
-│   └── models/
-│       ├── transaction_models.py
-│       ├── period_models.py
-│       └── return_models.py
-├── tests/
-│   ├── test_math_utils.py
-│   ├── test_tax_utils.py
-│   ├── test_period_utils.py
-│   └── test_endpoints.py
-├── Dockerfile
-├── compose.yaml
-├── requirements.txt
-└── README.md
-```
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection string |
+| `CACHE_TTL_SECONDS` | `60` | Cache TTL for both L1 and L2 |
+| `L1_CACHE_MAXSIZE` | `4096` | Max entries in in-process cache |
+| `REDIS_POOL_SIZE` | `50` | Redis connection pool size |
+| `DEBUG` | `false` | Enable debug logging |
